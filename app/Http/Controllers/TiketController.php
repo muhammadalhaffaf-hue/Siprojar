@@ -172,12 +172,20 @@ class TiketController extends Controller
         }
 
         if ($data['status'] === 'selesai') {
-            abort_unless(
-                $tiket->status === 'menunggu_verifikasi' &&
-                    $tiket->riwayat()->whereNotNull('bukti_file')->exists(),
-                422,
-                'Bukti penanganan vendor wajib diverifikasi sebelum tiket diselesaikan.',
-            );
+            if ($tiket->ditangani_internal) {
+                abort_unless(
+                    $user->role === 'admin' && $tiket->status === 'proses',
+                    422,
+                    'Tiket internal hanya dapat diselesaikan Admin saat berstatus proses.',
+                );
+            } else {
+                abort_unless(
+                    $tiket->status === 'menunggu_verifikasi' &&
+                        $tiket->riwayat()->whereNotNull('bukti_file')->exists(),
+                    422,
+                    'Bukti penanganan vendor wajib diverifikasi sebelum tiket diselesaikan.',
+                );
+            }
         }
 
         $path = $request->hasFile('bukti_file')

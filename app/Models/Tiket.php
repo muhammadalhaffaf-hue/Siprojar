@@ -22,6 +22,10 @@ class Tiket extends Model
         'catatan_admin',
     ];
 
+    protected $casts = [
+        'ditangani_internal' => 'boolean',
+    ];
+
     public function kendala()
     {
         return $this->belongsTo(Kendala::class, 'kendala_id');

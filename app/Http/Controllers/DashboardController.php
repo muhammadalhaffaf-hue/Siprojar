@@ -58,8 +58,20 @@ class DashboardController extends Controller
                     ->get()
                     ->map(function (DataProfiling $profiling): array {
                         $speedTest = $profiling->speedTest;
-                        $isGood = $speedTest?->hasil === 'sesuai';
-                        $hasSpeedTest = $speedTest !== null;
+                        $bandwidth = (float) ($profiling->opd->koneksiInternet
+                            ->firstWhere('status', 'aktif')?->bandwidth_mbps ?? 0);
+                        $download = $speedTest?->kecepatan_unduh === null
+                            ? null
+                            : (float) $speedTest->kecepatan_unduh;
+                        $conditionPercent = $download !== null && $bandwidth > 0
+                            ? max(0, min(100, (int) round($download / $bandwidth * 100)))
+                            : null;
+                        $condition = match (true) {
+                            $conditionPercent === null => 'Belum Ada Data',
+                            $conditionPercent >= 80 => 'Baik',
+                            $conditionPercent >= 60 => 'Sedang',
+                            default => 'Buruk',
+                        };
                         $activeTickets = $profiling->kendala
                             ->filter(fn ($issue) => $issue->tiket
                                 && ! in_array($issue->tiket->status, ['selesai', 'ditolak'], true))
@@ -72,14 +84,10 @@ class DashboardController extends Controller
                         return [
                             'id' => $profiling->id,
                             'opd' => $profiling->opd->nama_opd,
-                            'bandwidth' => ($profiling->opd->koneksiInternet
-                                ->firstWhere('status', 'aktif')?->bandwidth_mbps ?? 0).' Mbps',
-                            'kondisi' => ! $hasSpeedTest
-                                ? 'Belum Ada Data'
-                                : ($isGood ? 'Baik' : 'Buruk'),
-                            'dl' => $speedTest?->kecepatan_unduh === null
-                                ? null
-                                : (float) $speedTest->kecepatan_unduh,
+                            'bandwidth' => ($bandwidth ?: 0).' Mbps',
+                            'kondisi' => $condition,
+                            'condition_percent' => $conditionPercent,
+                            'dl' => $download,
                             'ul' => $speedTest?->kecepatan_unggah === null
                                 ? null
                                 : (float) $speedTest->kecepatan_unggah,
@@ -92,9 +100,9 @@ class DashboardController extends Controller
                             },
                             'year' => $year,
                             'month' => $month,
-                            'baik' => $isGood ? 100 : 0,
-                            'sedang' => 0,
-                            'buruk' => $hasSpeedTest && ! $isGood ? 100 : 0,
+                            'baik' => $condition === 'Baik' ? 100 : 0,
+                            'sedang' => $condition === 'Sedang' ? 100 : 0,
+                            'buruk' => $condition === 'Buruk' ? 100 : 0,
                         ];
                     })
                     ->values())

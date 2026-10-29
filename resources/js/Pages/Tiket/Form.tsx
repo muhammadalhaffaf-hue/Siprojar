@@ -1,6 +1,7 @@
 import { Form, Link } from "@inertiajs/react";
 export default function FormPage({ kendala }: any) {
     const labels: Record<string, string> = {
+        koneksi_putus: "Koneksi Putus",
         bandwidth_kurang: "Speed Lambat",
         device: "Perangkat Rusak",
         topologi: "Konfigurasi Jaringan",

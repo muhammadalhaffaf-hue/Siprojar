@@ -161,7 +161,10 @@ class DataProfilingController extends Controller
             'bandwidth_mbps' => ['nullable', 'numeric', 'min:0'],
             'ping_ms' => ['nullable', 'numeric', 'min:0'],
             'kendala' => ['sometimes', 'array'],
-            'kendala.*.jenis_kendala' => ['required', 'in:bandwidth_kurang,device,topologi,sosialisasi,lainnya'],
+            'kendala.*.jenis_kendala' => [
+                'required',
+                'in:koneksi_putus,bandwidth_kurang,device,topologi,sosialisasi,lainnya',
+            ],
             'kendala.*.nama_kendala' => ['required_if:kendala.*.jenis_kendala,lainnya', 'nullable', 'string', 'max:150'],
             'kendala.*.deskripsi' => ['nullable', 'string', 'max:10000'],
         ]);

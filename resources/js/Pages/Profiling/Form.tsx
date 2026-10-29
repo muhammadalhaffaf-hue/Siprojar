@@ -2,9 +2,28 @@ import { useState } from "react";
 import { Form, Link } from "@inertiajs/react";
 export default function FormPage({ profiling, opds }: any) {
     const edit = Boolean(profiling?.id);
-    const [issueType, setIssueType] = useState(
-        profiling?.kendala?.[0]?.nama_kendala ? "lainnya" : "",
+    const [selectedIssues, setSelectedIssues] = useState<string[]>(
+        Array.from(
+            new Set(
+                profiling?.kendala?.map((item: any) =>
+                    item.nama_kendala?.trim() ? "lainnya" : item.jenis_kendala,
+                ) ?? [],
+            ),
+        ),
     );
+    const [otherIssueName, setOtherIssueName] = useState(
+        profiling?.kendala?.find((item: any) => item.nama_kendala)
+            ?.nama_kendala ?? "",
+    );
+    const issueOptions = [
+        { value: "koneksi_putus", label: "Koneksi Putus" },
+        { value: "bandwidth_kurang", label: "Speed Lambat" },
+        { value: "device", label: "Perangkat Rusak" },
+        { value: "topologi", label: "Konfigurasi Jaringan" },
+        { value: "sosialisasi", label: "Gangguan ISP" },
+        { value: "lainnya", label: "Lainnya" },
+    ];
+    const otherIssueIndex = selectedIssues.indexOf("lainnya");
     return (
         <div className="min-h-screen bg-gray-50 p-6">
             <div className="mx-auto max-w-2xl rounded bg-white p-6 shadow">
@@ -77,28 +96,54 @@ export default function FormPage({ profiling, opds }: any) {
                         <option value="sesuai">Sesuai</option>
                         <option value="tidak_sesuai">Tidak sesuai</option>
                     </select>
-                    <select
-                        name="kendala[0][jenis_kendala]"
-                        value={issueType}
-                        onChange={(event) => setIssueType(event.target.value)}
-                        className="rounded border p-2"
-                    >
-                        <option value="">Tidak ada kendala</option>
-                        <option value="bandwidth_kurang">
-                            Bandwidth kurang
-                        </option>
-                        <option value="device">Device</option>
-                        <option value="topologi">Topologi</option>
-                        <option value="sosialisasi">Sosialisasi</option>
-                        <option value="lainnya">Lainnya</option>
-                    </select>
-                    {issueType === "lainnya" && (
+                    <fieldset className="grid gap-2 rounded border p-3">
+                        <legend className="px-1 text-sm font-medium">
+                            Kendala jaringan (boleh pilih lebih dari satu)
+                        </legend>
+                        {issueOptions.map((option) => (
+                            <label
+                                key={option.value}
+                                className="flex items-center gap-2 text-sm"
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={selectedIssues.includes(
+                                        option.value,
+                                    )}
+                                    onChange={(event) =>
+                                        setSelectedIssues((current) =>
+                                            event.target.checked
+                                                ? [...current, option.value]
+                                                : current.filter(
+                                                      (issue) =>
+                                                          issue !==
+                                                          option.value,
+                                                  ),
+                                        )
+                                    }
+                                />
+                                {option.label}
+                            </label>
+                        ))}
+                        {selectedIssues.map((issue, index) => (
+                            <input
+                                key={issue}
+                                type="hidden"
+                                name={`kendala[${index}][jenis_kendala]`}
+                                value={issue}
+                            />
+                        ))}
+                    </fieldset>
+                    {otherIssueIndex !== -1 && (
                         <input
-                            name="kendala[0][nama_kendala]"
+                            name={`kendala[${otherIssueIndex}][nama_kendala]`}
                             required
                             maxLength={150}
                             placeholder="Sebutkan kendala lainnya"
-                            defaultValue={profiling?.kendala?.[0]?.nama_kendala ?? ""}
+                            value={otherIssueName}
+                            onChange={(event) =>
+                                setOtherIssueName(event.target.value)
+                            }
                             className="rounded border p-2"
                         />
                     )}

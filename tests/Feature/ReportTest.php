@@ -66,8 +66,45 @@ class ReportTest extends TestCase
                 ->where('reportRows.0.profiling', 'Diverifikasi')
                 ->where('reportRows.0.year', 2026)
                 ->where('reportRows.0.month', 9)
+                ->where('reportRows.0.condition_percent', 88)
                 ->where('reportRows.0.baik', 100)
                 ->where('reportRows.0.sedang', 0)
+                ->where('reportRows.0.buruk', 0));
+    }
+
+    public function test_admin_report_classifies_network_condition_from_download_ratio(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $opd = Opd::query()->create(['nama_opd' => 'Bagian Kerjasama']);
+        KoneksiInternet::query()->create([
+            'opd_id' => $opd->id,
+            'nama_isp' => 'ISP Uji',
+            'bandwidth_mbps' => 100,
+            'status' => 'aktif',
+        ]);
+        $profiling = DataProfiling::query()->create([
+            'opd_id' => $opd->id,
+            'periode' => '2026-10',
+            'status_verifikasi' => 'diajukan',
+        ]);
+        SpeedTest::query()->create([
+            'data_profiling_id' => $profiling->id,
+            'kecepatan_unduh' => 71,
+            'kecepatan_unggah' => 30,
+            'hasil' => 'tidak_sesuai',
+            'tanggal_test' => '2026-10-14',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/dashboard')
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Opd/Index')
+                ->has('reportRows', 1)
+                ->where('reportRows.0.opd', 'Bagian Kerjasama')
+                ->where('reportRows.0.kondisi', 'Sedang')
+                ->where('reportRows.0.condition_percent', 71)
+                ->where('reportRows.0.baik', 0)
+                ->where('reportRows.0.sedang', 100)
                 ->where('reportRows.0.buruk', 0));
     }
 }

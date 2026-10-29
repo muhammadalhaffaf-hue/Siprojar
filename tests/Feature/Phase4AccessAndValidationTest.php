@@ -184,6 +184,64 @@ class Phase4AccessAndValidationTest extends TestCase
                 ->where('tickets.0.kendala.profiling.opd.nama_opd', 'Dinas Sosial'));
     }
 
+    public function test_opd_dashboard_receives_only_its_profilings_and_tickets_from_database(): void
+    {
+        $opd = Opd::create([
+            'nama_opd' => 'Dinas Perindustrian dan Perdagangan',
+            'alamat' => 'Jl. Perdagangan',
+            'jumlah_pegawai' => 60,
+        ]);
+        $otherOpd = Opd::create([
+            'nama_opd' => 'Dinas Kesehatan',
+            'alamat' => 'Jl. Kesehatan',
+            'jumlah_pegawai' => 30,
+        ]);
+        /** @var User $user */
+        $user = User::factory()->create(['role' => 'opd', 'opd_id' => $opd->id]);
+        $profiling = DataProfiling::create([
+            'opd_id' => $opd->id,
+            'periode' => '2026-10',
+            'jumlah_device' => 12,
+            'status_verifikasi' => 'diverifikasi',
+        ]);
+        $issue = Kendala::create([
+            'data_profiling_id' => $profiling->id,
+            'jenis_kendala' => 'koneksi_putus',
+            'deskripsi' => 'Koneksi sering terputus.',
+        ]);
+        $ticket = Tiket::create([
+            'nomor_tiket' => 'TKT-OPD-001',
+            'kendala_id' => $issue->id,
+            'dibuat_oleh' => $user->id,
+            'urgensi' => 'tinggi',
+            'status' => 'proses',
+        ]);
+        $otherProfiling = DataProfiling::create([
+            'opd_id' => $otherOpd->id,
+            'periode' => '2026-10',
+            'jumlah_device' => 8,
+            'status_verifikasi' => 'diajukan',
+        ]);
+        Kendala::create([
+            'data_profiling_id' => $otherProfiling->id,
+            'jenis_kendala' => 'device',
+            'deskripsi' => 'Router bermasalah.',
+        ]);
+
+        $this->actingAs($user)
+            ->get('/opd/dashboard')
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Opd/Index')
+                ->where('role', 'opd')
+                ->where('opdName', $opd->nama_opd)
+                ->has('profilings', 1)
+                ->where('profilings.0.id', $profiling->id)
+                ->where('profilings.0.status_verifikasi', 'diverifikasi')
+                ->has('tickets', 1)
+                ->where('tickets.0.id', $ticket->id)
+                ->where('tickets.0.kendala.jenis_kendala', 'koneksi_putus'));
+    }
+
     public function test_vendor_dashboard_only_receives_tickets_assigned_to_its_vendor(): void
     {
         $opd = Opd::create([
@@ -490,6 +548,47 @@ class Phase4AccessAndValidationTest extends TestCase
                 ->component('Profiling/Index')
                 ->has('profilings.data', 1)
                 ->where('profilings.data.0.periode', '2026-10'));
+    }
+
+    public function test_profiling_keeps_connection_loss_slow_speed_and_device_issues_distinct(): void
+    {
+        $opd = Opd::create([
+            'nama_opd' => 'Dinas Pendidikan',
+            'alamat' => 'Jl. Pendidikan',
+            'jumlah_pegawai' => 50,
+        ]);
+        /** @var User $user */
+        $user = User::factory()->create(['role' => 'opd', 'opd_id' => $opd->id]);
+
+        $response = $this->actingAs($user)
+            ->postJson('/opd/profiling', [
+                'periode' => '2026-10',
+                'jumlah_device' => 10,
+                'kendala' => [
+                    ['jenis_kendala' => 'koneksi_putus', 'deskripsi' => 'Koneksi sering putus.'],
+                    ['jenis_kendala' => 'bandwidth_kurang', 'deskripsi' => 'Kecepatan internet lambat.'],
+                    ['jenis_kendala' => 'device', 'deskripsi' => 'Perangkat jaringan rusak.'],
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonCount(3, 'profiling.kendala')
+            ->assertJsonPath('profiling.kendala.0.jenis_kendala', 'koneksi_putus')
+            ->assertJsonPath('profiling.kendala.1.jenis_kendala', 'bandwidth_kurang')
+            ->assertJsonPath('profiling.kendala.2.jenis_kendala', 'device');
+
+        $this->assertDatabaseCount('kendala', 3);
+        $this->assertDatabaseHas('kendala', [
+            'data_profiling_id' => $response->json('profiling.id'),
+            'jenis_kendala' => 'koneksi_putus',
+        ]);
+        $this->assertDatabaseHas('kendala', [
+            'data_profiling_id' => $response->json('profiling.id'),
+            'jenis_kendala' => 'bandwidth_kurang',
+        ]);
+        $this->assertDatabaseHas('kendala', [
+            'data_profiling_id' => $response->json('profiling.id'),
+            'jenis_kendala' => 'device',
+        ]);
     }
 
     public function test_saving_current_period_draft_updates_existing_profiling_instead_of_duplicating(): void
@@ -945,6 +1044,64 @@ class Phase4AccessAndValidationTest extends TestCase
         $this->assertDatabaseHas('riwayat_tiket', [
             'tiket_id' => $ticket->id,
             'status_baru' => 'diteruskan',
+        ]);
+    }
+
+    public function test_admin_can_complete_internal_ticket_with_a_resolution_note(): void
+    {
+        $opd = Opd::create([
+            'nama_opd' => 'Dinas Sosial',
+            'alamat' => 'Jl. Sosial',
+            'jumlah_pegawai' => 60,
+        ]);
+        /** @var User $admin */
+        $admin = User::factory()->create(['role' => 'admin']);
+        /** @var User $opdUser */
+        $opdUser = User::factory()->create(['role' => 'opd', 'opd_id' => $opd->id]);
+        $profiling = DataProfiling::create([
+            'opd_id' => $opd->id,
+            'periode' => '2026-10',
+            'jumlah_device' => 10,
+            'status_verifikasi' => 'diverifikasi',
+        ]);
+        $kendala = Kendala::create([
+            'data_profiling_id' => $profiling->id,
+            'jenis_kendala' => 'device',
+            'deskripsi' => 'Switch bermasalah',
+        ]);
+        $ticket = Tiket::create([
+            'nomor_tiket' => 'TKT-TEST-INTERNAL',
+            'kendala_id' => $kendala->id,
+            'dibuat_oleh' => $opdUser->id,
+            'urgensi' => 'sedang',
+            'status' => 'baru',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/admin/tiket/{$ticket->id}/forward", [
+                'ditangani_internal' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('ticket.status', 'proses')
+            ->assertJsonPath('ticket.ditangani_internal', true);
+
+        $this->actingAs($admin)
+            ->postJson("/admin/tiket/{$ticket->id}/status", [
+                'status' => 'selesai',
+                'catatan' => 'Switch diganti dan koneksi telah diuji normal.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('ticket.status', 'selesai');
+
+        $this->assertDatabaseHas('tiket', [
+            'id' => $ticket->id,
+            'status' => 'selesai',
+            'ditangani_internal' => true,
+        ]);
+        $this->assertDatabaseHas('riwayat_tiket', [
+            'tiket_id' => $ticket->id,
+            'status_baru' => 'selesai',
+            'catatan' => 'Switch diganti dan koneksi telah diuji normal.',
         ]);
     }
 

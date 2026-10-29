@@ -147,6 +147,7 @@ type VendorTicketRecord = {
     urgensi: string;
     created_at?: string;
     pihak_ketiga_id: number | null;
+    ditangani_internal: boolean;
     kendala?: {
         jenis_kendala: string;
         nama_kendala?: string | null;
@@ -168,6 +169,7 @@ type ReportRow = {
     opd: string;
     bandwidth: string;
     kondisi: string;
+    condition_percent: number | null;
     dl: number | null;
     ul: number | null;
     tiket: number;
@@ -199,6 +201,7 @@ const ticketStatusLabels: Record<string, string> = {
     ditolak: "Ditolak",
 };
 const profilingIssueLabels: Record<string, string> = {
+    koneksi_putus: "Koneksi Putus",
     bandwidth_kurang: "Speed Lambat",
     device: "Perangkat Rusak",
     topologi: "Konfigurasi Salah",
@@ -211,6 +214,35 @@ const getProfilingIssueLabel = (issue: {
     issue.nama_kendala?.trim() ||
     profilingIssueLabels[issue.jenis_kendala] ||
     issue.jenis_kendala;
+const getNetworkConditionInfo = (
+    speedTest?: ProfilingRecord["speed_test"] | null,
+    bandwidthMbps?: string | number | null,
+) => {
+    const download = Number(speedTest?.kecepatan_unduh);
+    const contracted = Number(
+        bandwidthMbps == null || bandwidthMbps === ""
+            ? 0
+            : bandwidthMbps,
+    );
+
+    if (
+        !speedTest ||
+        !Number.isFinite(download) ||
+        !Number.isFinite(contracted) ||
+        contracted <= 0
+    ) {
+        return { label: "Belum Ada Data", percent: 0 };
+    }
+
+    const percent = Math.min(
+        100,
+        Math.max(0, Math.round((download / contracted) * 100)),
+    );
+
+    if (percent >= 80) return { label: "Baik", percent };
+    if (percent >= 60) return { label: "Sedang", percent };
+    return { label: "Buruk", percent };
+};
 type Screen =
     | "login"
     | "dashboard-admin"
@@ -247,9 +279,9 @@ const ticketTrend = [
     { bulan: "Sep", baru: 11, proses: 9, selesai: 14 },
 ];
 const kondisiPie = [
-    { name: "Baik", value: 68, color: "#22c55e" },
-    { name: "Sedang", value: 22, color: "#f59e0b" },
-    { name: "Buruk", value: 10, color: "#ef4444" },
+    { name: "Baik", value: 0, color: "#22c55e" },
+    { name: "Sedang", value: 0, color: "#f59e0b" },
+    { name: "Buruk", value: 0, color: "#ef4444" },
 ];
 const opdList = [
     {
@@ -403,7 +435,7 @@ function toProfilingQueueItem(profiling: ProfilingRecord): ProfilingQueueItem {
                 ? null
                 : Number(speedTest.ping_ms),
         isp: connection?.nama_isp ?? "-",
-        kondisi: speedTest?.hasil === "sesuai" ? "Baik" : "Sedang",
+        kondisi: getNetworkConditionInfo(speedTest, connection?.bandwidth_mbps).label,
         apps: (profiling.aplikasi ?? []).map((app) => app.nama_aplikasi),
         kendala: (profiling.kendala ?? []).map(getProfilingIssueLabel),
         catatan:
@@ -687,10 +719,10 @@ const StatCard = ({
                     {icon}
                 </div>
                 <div className="flex-1 min-w-0">
-                    <p className="text-xs text-slate-400 font-medium uppercase tracking-wide truncate">
+                    <p className="text-xs text-slate-400 font-medium uppercase tracking-wide whitespace-normal break-words">
                         {label}
                     </p>
-                    <p className="text-xl sm:text-2xl font-extrabold text-slate-800 mt-0.5">
+                    <p className="text-lg sm:text-2xl font-extrabold leading-tight text-slate-800 mt-0.5 break-words">
                         {value}
                     </p>
                     {sub && (
@@ -1833,11 +1865,26 @@ function NocOverview({
     const measuredProfilings = latestProfilings.filter(
         (profiling) => profiling.speed_test,
     );
-    const suitableCount = measuredProfilings.filter(
-        (profiling) => profiling.speed_test?.hasil === "sesuai",
-    ).length;
-    const suitablePercent = measuredProfilings.length
-        ? Math.round((suitableCount / measuredProfilings.length) * 100)
+    const conditionSummary = measuredProfilings.reduce(
+        (summary, profiling) => {
+            const connection = profiling.opd?.koneksi_internet?.find(
+                (item) => item.status === "aktif",
+            );
+            const condition = getNetworkConditionInfo(
+                profiling.speed_test,
+                connection?.bandwidth_mbps,
+            );
+
+            if (condition.label === "Baik") summary.baik += 1;
+            if (condition.label === "Sedang") summary.sedang += 1;
+            if (condition.label === "Buruk") summary.buruk += 1;
+            return summary;
+        },
+        { baik: 0, sedang: 0, buruk: 0 },
+    );
+    const goodCount = conditionSummary.baik;
+    const goodPercent = measuredProfilings.length
+        ? Math.round((goodCount / measuredProfilings.length) * 100)
         : null;
     const pingValues = latestProfilings
         .map((profiling) => Number(profiling.speed_test?.ping_ms))
@@ -1865,21 +1912,21 @@ function NocOverview({
     ).length;
     const opdHealth = opds.map((opd) => {
         const profiling = latestProfilingByOpd.get(opd.id);
-        const result = profiling?.speed_test?.hasil;
+        const connection = opd.koneksi_internet?.find(
+            (item) => item.status === "aktif",
+        );
+        const condition = getNetworkConditionInfo(
+            profiling?.speed_test,
+            connection?.bandwidth_mbps,
+        );
+
         return {
             name: opd.nama_opd,
             status:
-                result === "sesuai"
-                    ? "Sesuai"
-                    : result === "tidak_sesuai"
-                      ? "Tidak sesuai"
-                      : "Belum ada data",
-            health:
-                result === "sesuai"
-                    ? "Sesuai"
-                    : result === "tidak_sesuai"
-                      ? "Tidak sesuai"
-                      : "—",
+                condition.label === "Belum Ada Data"
+                    ? "Belum ada data"
+                    : condition.label,
+            health: condition.label === "Belum Ada Data" ? "—" : condition.label,
             latency:
                 profiling?.speed_test?.ping_ms == null
                     ? "Ping belum dicatat"
@@ -1908,19 +1955,19 @@ function NocOverview({
                                 </h3>
                             </div>
                             <p className="text-xs text-slate-400">
-                                Persentase profiling terbaru dengan hasil sesuai
+                                Persentase profiling terbaru dengan kondisi Baik
                             </p>
                         </div>
                         <span className="text-3xl font-extrabold text-blue-700">
-                            {suitablePercent == null
+                            {goodPercent == null
                                 ? "—"
-                                : `${suitablePercent}%`}
+                                : `${goodPercent}%`}
                         </span>
                     </div>
                     <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
                         <div
                             className="h-full rounded-full bg-blue-600"
-                            style={{ width: `${suitablePercent ?? 0}%` }}
+                            style={{ width: `${goodPercent ?? 0}%` }}
                         />
                     </div>
                     <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
@@ -1931,10 +1978,10 @@ function NocOverview({
                             </p>
                         </div>
                         <div>
-                            <p className="text-slate-400">Hasil sesuai</p>
+                            <p className="text-slate-400">Kondisi Baik</p>
                             <p className="font-bold text-slate-800">
                                 {measuredProfilings.length
-                                    ? `${suitableCount}/${measuredProfilings.length}`
+                                    ? `${goodCount}/${measuredProfilings.length}`
                                     : "—"}
                             </p>
                         </div>
@@ -1996,8 +2043,9 @@ function NocOverview({
                         <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
                             {[
                                 "Semua OPD",
-                                "Sesuai",
-                                "Tidak sesuai",
+                                "Baik",
+                                "Sedang",
+                                "Buruk",
                                 "Belum ada data",
                             ].map((item) => (
                                 <button
@@ -2019,7 +2067,7 @@ function NocOverview({
                             >
                                 <span className="flex items-center gap-3">
                                     <span
-                                        className={`h-2.5 w-2.5 rounded-full ${opd.status === "Sesuai" ? "bg-emerald-500" : opd.status === "Tidak sesuai" ? "bg-red-500" : "bg-slate-300"}`}
+                                        className={`h-2.5 w-2.5 rounded-full ${opd.status === "Baik" ? "bg-emerald-500" : opd.status === "Buruk" ? "bg-red-500" : opd.status === "Sedang" ? "bg-amber-500" : "bg-slate-300"}`}
                                     />
                                     <span>
                                         <span className="block text-sm font-semibold text-slate-800">
@@ -2169,8 +2217,10 @@ function DashboardAdmin({
         );
         const speedTest = profiling.speed_test;
         const periodParts = profiling.periode.split("-").map(Number);
-        const isSuitable = speedTest?.hasil === "sesuai";
-        const isUnsuitable = speedTest?.hasil === "tidak_sesuai";
+        const condition = getNetworkConditionInfo(
+            speedTest,
+            connection?.bandwidth_mbps,
+        );
 
         return {
             id: profiling.id,
@@ -2187,9 +2237,9 @@ function DashboardAdmin({
             profiling: profiling.status_verifikasi,
             year: periodParts[0] ?? 0,
             month: periodParts[1] ?? 0,
-            baik: isSuitable ? 100 : 0,
-            sedang: 0,
-            buruk: isUnsuitable ? 100 : 0,
+            baik: condition.label === "Baik" ? condition.percent : 0,
+            sedang: condition.label === "Sedang" ? condition.percent : 0,
+            buruk: condition.label === "Buruk" ? condition.percent : 0,
         };
     });
     const dashboardTickets = tickets.map((ticket) => ({
@@ -2235,6 +2285,20 @@ function DashboardAdmin({
             matchesOpd(row.opd) &&
             matchesPeriod(row.date),
     );
+    const conditionChartRows = filteredRows.map((row) => {
+        const bestMatch =
+            row.baik > 0 ? { label: "Baik", value: row.baik, fill: "#22c55e" } :
+            row.sedang > 0 ? { label: "Sedang", value: row.sedang, fill: "#f59e0b" } :
+            row.buruk > 0 ? { label: "Buruk", value: row.buruk, fill: "#ef4444" } :
+            { label: "Belum Ada Data", value: 0, fill: "#cbd5e1" };
+
+        return {
+            ...row,
+            displayValue: bestMatch.value,
+            fill: bestMatch.fill,
+            label: bestMatch.label,
+        };
+    });
     const filteredTickets = dashboardTickets.filter(
         (ticket) => matchesOpd(ticket.opd) && matchesPeriod(ticket.tanggal),
     );
@@ -2247,23 +2311,36 @@ function DashboardAdmin({
     const conditionCounts = filteredRows.reduce(
         (counts, row) => {
             const profiling = profilings.find((item) => item.id === row.id);
-            const result = profiling?.speed_test?.hasil;
-            if (result === "sesuai") counts.baik += 1;
-            if (result === "tidak_sesuai") counts.buruk += 1;
+            const connection = profiling?.opd?.koneksi_internet?.find(
+                (item) => item.status === "aktif",
+            );
+            const condition = getNetworkConditionInfo(
+                profiling?.speed_test,
+                connection?.bandwidth_mbps,
+            );
+
+            if (condition.label === "Baik") counts.baik += 1;
+            if (condition.label === "Sedang") counts.sedang += 1;
+            if (condition.label === "Buruk") counts.buruk += 1;
             return counts;
         },
         { baik: 0, sedang: 0, buruk: 0 },
     );
-    const measuredConditions = conditionCounts.baik + conditionCounts.buruk;
-    const conditionData = kondisiPie.map((condition) => {
-        const key = condition.name.toLowerCase() as "baik" | "sedang" | "buruk";
-        return {
-            ...condition,
-            value: measuredConditions
-                ? Math.round((conditionCounts[key] / measuredConditions) * 100)
-                : 0,
-        };
-    });
+    const measuredConditions = Object.values(conditionCounts).reduce(
+        (total, value) => total + value,
+        0,
+    );
+    const conditionData = kondisiPie
+        .map((condition) => {
+            const key = condition.name.toLowerCase() as "baik" | "sedang" | "buruk";
+            return {
+                ...condition,
+                value: measuredConditions
+                    ? Math.round((conditionCounts[key] / measuredConditions) * 100)
+                    : 0,
+            };
+        })
+        .filter((condition) => condition.value > 0);
     const ticketTrendData = periodOptions
         .slice(1)
         .reverse()
@@ -2367,7 +2444,7 @@ function DashboardAdmin({
                         Kondisi Jaringan per OPD (%)
                     </h3>
                     <ResponsiveContainer width="100%" height={210}>
-                        <BarChart data={filteredRows} barSize={16}>
+                        <BarChart data={conditionChartRows} barSize={16}>
                             <CartesianGrid
                                 strokeDasharray="3 3"
                                 stroke="#f1f5f9"
@@ -2378,30 +2455,18 @@ function DashboardAdmin({
                             />
                             <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} />
                             <Tooltip
+                                formatter={(value: number) => [`${value}%`, "Kondisi"]}
                                 contentStyle={{
                                     borderRadius: "12px",
                                     border: "none",
                                     boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
                                 }}
                             />
-                            <Bar
-                                dataKey="baik"
-                                name="Baik"
-                                fill="#22c55e"
-                                radius={[4, 4, 0, 0]}
-                            />
-                            <Bar
-                                dataKey="sedang"
-                                name="Sedang"
-                                fill="#f59e0b"
-                                radius={[4, 4, 0, 0]}
-                            />
-                            <Bar
-                                dataKey="buruk"
-                                name="Buruk"
-                                fill="#ef4444"
-                                radius={[4, 4, 0, 0]}
-                            />
+                            <Bar dataKey="displayValue" name="Kondisi" radius={[4, 4, 0, 0]}>
+                                {conditionChartRows.map((row) => (
+                                    <Cell key={row.id} fill={row.fill} />
+                                ))}
+                            </Bar>
                         </BarChart>
                     </ResponsiveContainer>
                 </Card>
@@ -2419,7 +2484,7 @@ function DashboardAdmin({
                                 outerRadius={70}
                                 dataKey="value"
                             >
-                                {kondisiPie.map((e, i) => (
+                                {conditionData.map((e, i) => (
                                     <Cell key={i} fill={e.color} />
                                 ))}
                             </Pie>
@@ -3688,6 +3753,7 @@ function FormProfiling({
         (item) => item.status === "aktif",
     );
     const existingIssueLabels: Record<string, string> = {
+        koneksi_putus: "Koneksi Putus",
         bandwidth_kurang: "Speed Lambat",
         device: "Perangkat Rusak",
         topologi: "Konfigurasi Salah",
@@ -3705,12 +3771,16 @@ function FormProfiling({
         ],
     );
     const [kendala, setKendala] = useState(
-        existingProfiling?.kendala?.map((item) =>
-            item.nama_kendala
-                ? "Lainnya"
-                : (existingIssueLabels[item.jenis_kendala] ??
-                  item.jenis_kendala),
-        ) ?? [],
+        Array.from(
+            new Set(
+                existingProfiling?.kendala?.map((item) =>
+                    item.nama_kendala
+                        ? "Lainnya"
+                        : (existingIssueLabels[item.jenis_kendala] ??
+                          item.jenis_kendala),
+                ) ?? [],
+            ),
+        ),
     );
     const [deviceCount, setDeviceCount] = useState(
         String(existingProfiling?.jumlah_device ?? ""),
@@ -3787,7 +3857,7 @@ function FormProfiling({
             return;
         }
         const kendalaTypes: Record<string, string> = {
-            "Koneksi Putus": "bandwidth_kurang",
+            "Koneksi Putus": "koneksi_putus",
             "Speed Lambat": "bandwidth_kurang",
             "Perangkat Rusak": "device",
             "Konfigurasi Salah": "topologi",
@@ -4342,6 +4412,10 @@ function RiwayatProfiling({
             (item) => item.status === "aktif",
         );
         const speedTest = profiling.speed_test;
+        const kondisi = getNetworkConditionInfo(
+            speedTest,
+            connection?.bandwidth_mbps,
+        ).label;
         return {
             ...riwayatProfiling[0],
             id: profiling.id,
@@ -4352,7 +4426,7 @@ function RiwayatProfiling({
                 dikembalikan: "Dikembalikan",
                 draft: "Draft",
             }[profiling.status_verifikasi] ?? profiling.status_verifikasi,
-            kondisi: speedTest?.hasil === "sesuai" ? "Baik" : "Sedang",
+            kondisi,
             dl: Number(speedTest?.kecepatan_unduh ?? 0),
             ul: Number(speedTest?.kecepatan_unggah ?? 0),
             ping:
@@ -5157,6 +5231,7 @@ function KelolaTicket({
         tanggal: ticket.created_at?.slice(0, 10) ?? "",
         vendor: ticket.pihak_ketiga?.nama_vendor ?? null,
         vendorId: ticket.pihak_ketiga_id,
+        ditangani_internal: ticket.ditangani_internal,
         prioritas:
             ticket.urgensi === "tinggi"
                 ? "Tinggi"
@@ -5189,6 +5264,7 @@ function KelolaTicket({
         tanggal: ticket.created_at?.slice(0, 10) ?? "",
         vendor: ticket.pihak_ketiga?.nama_vendor ?? null,
         vendorId: ticket.pihak_ketiga_id,
+        ditangani_internal: ticket.ditangani_internal,
         prioritas:
             ticket.urgensi === "tinggi"
                 ? "Tinggi"
@@ -5209,6 +5285,9 @@ function KelolaTicket({
     const [actionDone, setActionDone] = useState(false);
     const [actionError, setActionError] = useState("");
     const [saving, setSaving] = useState(false);
+    const [completionNote, setCompletionNote] = useState("");
+    const [completionError, setCompletionError] = useState("");
+    const [completionSaving, setCompletionSaving] = useState(false);
     const [vendorModal, setVendorModal] = useState(false);
     const [vendorForm, setVendorForm] = useState({
         nama_vendor: "",
@@ -5254,6 +5333,35 @@ function KelolaTicket({
             );
         } finally {
             setSaving(false);
+        }
+    };
+    const completeInternalTicket = async () => {
+        if (!sel || !sel.ditangani_internal) return;
+        setCompletionError("");
+        setCompletionSaving(true);
+        try {
+            const response = await axios.post(
+                route("tiket.status", { tiket: sel.databaseId }),
+                {
+                    status: "selesai",
+                    catatan: completionNote.trim(),
+                },
+                { headers: { Accept: "application/json" } },
+            );
+            const updatedTicket = response.data.ticket;
+            onChanged(updatedTicket);
+            setSel(mapTicket(updatedTicket));
+            setCompletionNote("");
+        } catch (error) {
+            setCompletionError(
+                axios.isAxiosError(error)
+                    ? error.response?.data?.errors?.catatan?.[0] ??
+                          error.response?.data?.message ??
+                          "Penyelesaian tiket gagal disimpan."
+                    : "Terjadi kesalahan saat menyelesaikan tiket.",
+            );
+        } finally {
+            setCompletionSaving(false);
         }
     };
     const createVendor = async () => {
@@ -5347,6 +5455,8 @@ function KelolaTicket({
                                 setSel(t);
                                 setAction(null);
                                 setActionDone(false);
+                                setCompletionNote("");
+                                setCompletionError("");
                             }}
                         >
                             <div className="flex items-start gap-3">
@@ -5582,6 +5692,51 @@ function KelolaTicket({
                                         : <><ArrowRight size={16} className="mr-1 inline" /> Tiket diteruskan ke {vendor}. Menunggu konfirmasi vendor.</>}
                                 </InfoBox>
                             )}
+                            {Boolean(sel.ditangani_internal) &&
+                                sel.status === "Proses" && (
+                                    <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+                                        <div>
+                                            <p className="font-semibold text-sm text-emerald-900">
+                                                Penyelesaian Penanganan Internal
+                                            </p>
+                                            <p className="mt-1 text-xs text-emerald-800">
+                                                Catat hasil penanganan sebelum
+                                                menutup tiket.
+                                            </p>
+                                        </div>
+                                        <textarea
+                                            value={completionNote}
+                                            onChange={(event) =>
+                                                setCompletionNote(
+                                                    event.target.value,
+                                                )
+                                            }
+                                            rows={3}
+                                            maxLength={10000}
+                                            required
+                                            placeholder="Jelaskan tindakan dan hasil penanganan..."
+                                            className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
+                                        />
+                                        {completionError && (
+                                            <InfoBox type="error">
+                                                {completionError}
+                                            </InfoBox>
+                                        )}
+                                        <Btn
+                                            variant="success"
+                                            disabled={
+                                                completionSaving ||
+                                                !completionNote.trim()
+                                            }
+                                            onClick={completeInternalTicket}
+                                        >
+                                            <CheckCircle2 size={16} />
+                                            {completionSaving
+                                                ? "Menyelesaikan..."
+                                                : "Tandai Tiket Selesai"}
+                                        </Btn>
+                                    </div>
+                                )}
                             {sel.vendor && sel.status !== "Baru" && (
                                 <div className="flex items-center gap-2 bg-purple-50 border border-purple-100 rounded-xl p-3">
                                     <span className="text-purple-500">↗</span>
@@ -5741,12 +5896,6 @@ function LaporanLegacy() {
                     value="68%"
                     icon={<CheckCircle2 size={20} />}
                     color="green"
-                />
-                <StatCard
-                    label="Kondisi Sedang"
-                    value="22%"
-                    icon={<AlertTriangle size={20} />}
-                    color="amber"
                 />
                 <StatCard
                     label="Kondisi Buruk"
@@ -6018,6 +6167,20 @@ function Laporan({ reportRows }: { reportRows: ReportRow[] }) {
     const measuredRows = filtered.filter(
         (row) => row.kondisi !== "Belum Ada Data",
     );
+    const conditionChartRows = measuredRows.map((row) => {
+        return {
+            ...row,
+            displayValue: row.condition_percent ?? 0,
+            fill:
+                row.kondisi === "Baik"
+                    ? "#34d399"
+                    : row.kondisi === "Sedang"
+                      ? "#fbbf24"
+                      : row.kondisi === "Buruk"
+                        ? "#f87171"
+                        : "#cbd5e1",
+        };
+    });
     const average = (key: "baik" | "sedang" | "buruk") =>
         measuredRows.length
             ? `${Math.round(measuredRows.reduce((total, row) => total + row[key], 0) / measuredRows.length)}%`
@@ -6166,7 +6329,7 @@ function Laporan({ reportRows }: { reportRows: ReportRow[] }) {
                             </h3>
                             <ResponsiveContainer width="100%" height={240}>
                                 <BarChart
-                                    data={measuredRows}
+                                    data={conditionChartRows}
                                     layout="vertical"
                                     barSize={13}
                                 >
@@ -6186,25 +6349,12 @@ function Laporan({ reportRows }: { reportRows: ReportRow[] }) {
                                         tick={{ fontSize: 10, fill: "#64748b" }}
                                         width={110}
                                     />
-                                    <Tooltip />
-                                    <Bar
-                                        dataKey="baik"
-                                        name="Baik (%)"
-                                        stackId="condition"
-                                        fill="#34d399"
-                                    />
-                                    <Bar
-                                        dataKey="sedang"
-                                        name="Sedang (%)"
-                                        stackId="condition"
-                                        fill="#fbbf24"
-                                    />
-                                    <Bar
-                                        dataKey="buruk"
-                                        name="Buruk (%)"
-                                        stackId="condition"
-                                        fill="#f87171"
-                                    />
+                                    <Tooltip formatter={(value: number) => [`${value}%`, "Kondisi"]} />
+                                    <Bar dataKey="displayValue" name="Kondisi" radius={[0, 4, 4, 0]}>
+                                        {conditionChartRows.map((row) => (
+                                            <Cell key={row.id} fill={row.fill} />
+                                        ))}
+                                    </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </Card>
@@ -6316,10 +6466,50 @@ function Laporan({ reportRows }: { reportRows: ReportRow[] }) {
 function DashboardOPD({
     onNav,
     opdName,
+    profilings,
+    tickets,
 }: {
     onNav: (s: Screen) => void;
     opdName?: string | null;
+    profilings: ProfilingRecord[];
+    tickets: any[];
 }) {
+    const latestProfilings = [...profilings]
+        .sort((left, right) => right.periode.localeCompare(left.periode))
+        .slice(0, 3);
+    const latestProfiling = latestProfilings[0];
+    const profilingStatuses: Record<string, string> = {
+        draft: "Draft",
+        diajukan: "Diajukan",
+        diverifikasi: "Diverifikasi",
+        dikembalikan: "Dikembalikan",
+    };
+    const latestConnection = latestProfiling?.opd?.koneksi_internet?.find(
+        (item) => item.status === "aktif",
+    );
+    const networkCondition =
+        latestProfiling?.speed_test || latestConnection
+            ? getNetworkConditionInfo(
+                  latestProfiling?.speed_test,
+                  latestConnection?.bandwidth_mbps,
+              ).label
+            : "Belum";
+    const activeTicketCount = tickets.filter(
+        (ticket) => !["selesai", "ditolak"].includes(ticket.status),
+    ).length;
+    const completedTicketCount = tickets.filter(
+        (ticket) => ticket.status === "selesai",
+    ).length;
+    const latestTickets = tickets.slice(0, 3);
+    const ticketStatuses: Record<string, string> = {
+        baru: "Baru",
+        diteruskan: "Diteruskan",
+        proses: "Proses",
+        menunggu_verifikasi: "Menunggu Verifikasi",
+        selesai: "Selesai",
+        ditolak: "Ditolak",
+    };
+
     return (
         <div className="space-y-6">
             <PageHeader
@@ -6329,26 +6519,45 @@ function DashboardOPD({
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                 <StatCard
                     label="Status Profiling"
-                    value="Diverifikasi"
+                    value={
+                        latestProfiling
+                            ? (profilingStatuses[
+                                  latestProfiling.status_verifikasi
+                              ] ?? latestProfiling.status_verifikasi)
+                            : "Belum Ada"
+                    }
                     icon={<CheckCircle2 size={20} />}
-                    color="green"
-                    sub="Sep 2026"
+                    color={
+                        latestProfiling?.status_verifikasi === "diverifikasi"
+                            ? "green"
+                            : "amber"
+                    }
+                    sub={
+                        latestProfiling
+                            ? new Date(
+                                  `${latestProfiling.periode}-01T00:00:00`,
+                              ).toLocaleDateString("id-ID", {
+                                  month: "short",
+                                  year: "numeric",
+                              })
+                            : undefined
+                    }
                 />
                 <StatCard
                     label="Kondisi Jaringan"
-                    value="Baik"
+                    value={networkCondition}
                     icon={<Network size={20} />}
-                    color="blue"
+                    color={networkCondition === "Baik" ? "blue" : "amber"}
                 />
                 <StatCard
                     label="Tiket Aktif"
-                    value={2}
+                    value={activeTicketCount}
                     icon={<Ticket size={20} />}
                     color="amber"
                 />
                 <StatCard
                     label="Tiket Selesai"
-                    value={8}
+                    value={completedTicketCount}
                     icon="✓"
                     color="green"
                 />
@@ -6361,7 +6570,7 @@ function DashboardOPD({
                                 Profiling Terkini
                             </h3>
                             <p className="text-xs text-slate-400">
-                                3 periode terakhir
+                                {latestProfilings.length} periode terakhir
                             </p>
                         </div>
                         <Btn
@@ -6372,28 +6581,57 @@ function DashboardOPD({
                             Lihat semua →
                         </Btn>
                     </div>
-                    {riwayatProfiling.slice(0, 3).map((r) => (
+                    {latestProfilings.length === 0 ? (
+                        <p className="py-6 text-center text-sm text-slate-400">
+                            Belum ada data profiling.
+                        </p>
+                    ) : latestProfilings.map((profiling) => {
+                        const status =
+                            profilingStatuses[profiling.status_verifikasi] ??
+                            profiling.status_verifikasi;
+                        const connection = profiling.opd?.koneksi_internet?.find(
+                            (item) => item.status === "aktif",
+                        );
+                        const speedTest = profiling.speed_test;
+                        const condition = getNetworkConditionInfo(
+                            speedTest,
+                            connection?.bandwidth_mbps,
+                        ).label;
+
+                        return (
                         <div
-                            key={r.periode}
+                            key={profiling.id}
                             className="flex items-center gap-3 py-3 border-b border-slate-100 last:border-0"
                         >
                             <div className="w-9 h-9 bg-slate-100 rounded-xl flex items-center justify-center text-slate-500 text-xs font-bold flex-shrink-0">
-                                {r.periode.split(" ")[0]}
+                                {new Date(
+                                    `${profiling.periode}-01T00:00:00`,
+                                ).toLocaleDateString("id-ID", {
+                                    month: "short",
+                                })}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-sm font-semibold text-slate-800">
-                                    {r.periode}
+                                    {new Date(
+                                        `${profiling.periode}-01T00:00:00`,
+                                    ).toLocaleDateString("id-ID", {
+                                        month: "short",
+                                        year: "numeric",
+                                    })}
                                 </p>
                                 <p className="text-xs text-slate-400">
-                                    DL: {r.dl} Mbps · UL: {r.ul} Mbps
+                                    DL: {speedTest?.kecepatan_unduh ?? "-"} Mbps
+                                    {" · "}UL:{" "}
+                                    {speedTest?.kecepatan_unggah ?? "-"} Mbps
                                 </p>
                             </div>
                             <div className="flex flex-col items-end gap-1">
-                                {statusBadge(r.status)}
-                                {r.kondisi !== "-" && statusBadge(r.kondisi)}
+                                {statusBadge(status)}
+                                {condition !== "-" && statusBadge(condition)}
                             </div>
                         </div>
-                    ))}
+                        );
+                    })}
                 </Card>
                 <Card className="p-5">
                     <div className="flex items-center justify-between mb-4">
@@ -6413,9 +6651,16 @@ function DashboardOPD({
                             Lihat semua →
                         </Btn>
                     </div>
-                    {ticketList.slice(0, 3).map((t) => (
+                    {latestTickets.length === 0 ? (
+                        <p className="py-6 text-center text-sm text-slate-400">
+                            Belum ada tiket pengaduan.
+                        </p>
+                    ) : latestTickets.map((ticket) => {
+                        const status = ticketStatuses[ticket.status] ?? ticket.status;
+
+                        return (
                         <div
-                            key={t.id}
+                            key={ticket.id}
                             className="flex items-center gap-3 py-3 border-b border-slate-100 last:border-0"
                         >
                             <Dot
@@ -6425,24 +6670,32 @@ function DashboardOPD({
                                         Proses: "yellow",
                                         Selesai: "green",
                                         Diteruskan: "gray",
-                                    }[t.status] as
+                                        "Menunggu Verifikasi": "yellow",
+                                        Ditolak: "red",
+                                    }[status] as
                                         | "blue"
                                         | "yellow"
                                         | "green"
+                                        | "red"
                                         | "gray") ?? "gray"
                                 }
                             />
                             <div className="flex-1 min-w-0">
                                 <p className="text-sm font-semibold text-slate-800">
-                                    {t.kendala}
+                                    {getProfilingIssueLabel(
+                                        ticket.kendala ?? {
+                                            jenis_kendala: "",
+                                        },
+                                    )}
                                 </p>
                                 <p className="text-xs text-slate-400">
-                                    {t.tanggal}
+                                    {ticket.created_at?.slice(0, 10) ?? "-"}
                                 </p>
                             </div>
-                            {statusBadge(t.status)}
+                            {statusBadge(status)}
                         </div>
-                    ))}
+                        );
+                    })}
                 </Card>
             </div>
             <div className="flex gap-3 flex-wrap">
@@ -6876,6 +7129,7 @@ function TiketPengaduan({
 function PantauTiket({ tickets }: { tickets: any[] }) {
     const displayTickets = tickets.map((ticket) => {
         const kindLabels: Record<string, string> = {
+            koneksi_putus: "Koneksi Putus",
             bandwidth_kurang: "Speed Lambat",
             device: "Perangkat Rusak",
             topologi: "Konfigurasi Jaringan",
@@ -8788,6 +9042,8 @@ export default function App({
                     <DashboardOPD
                         onNav={setScreen}
                         opdName={authenticatedOpdName}
+                        profilings={databaseProfilings}
+                        tickets={databaseTickets}
                     />
                 );
             case "tiket-pengaduan":
